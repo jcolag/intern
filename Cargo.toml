@@ -6,4 +6,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-notify = "4.0.0"
+dirs = "4.0"
+gjson = "0.8"
+notify = "4.0.17"
+
