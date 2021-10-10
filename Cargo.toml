@@ -8,6 +8,9 @@ edition = "2018"
 [dependencies]
 dirs = "4.0"
 gjson = "0.8"
-rusqlite = "0.26.0"
 notify = "4.0.17"
+regex = "1.5.4"
+rusqlite = "0.26.0"
+rust-stemmers = "1.2.0"
+unicode-normalization = "0.1.19"
 
