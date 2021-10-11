@@ -10,8 +10,9 @@ use notify::DebouncedEvent::{
 };
 use notify::{watcher, RecursiveMode, Watcher};
 use regex::Regex;
-use rusqlite::{params, Connection, Statement};
+use rusqlite::{params, params_from_iter, Connection, Statement};
 use rust_stemmers::{Algorithm, Stemmer};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
@@ -22,11 +23,13 @@ use unicode_normalization::UnicodeNormalization;
 struct MonitoredFile {
     id: u32,
     modified: u64,
+    path: String,
 }
 
 #[derive(Debug)]
 struct WordStem {
     id: u32,
+    stem: String,
 }
 
 fn main() {
@@ -46,10 +49,10 @@ fn main() {
     enforce_data_model(&sqlite);
 
     let mut fileq = sqlite
-        .prepare("SELECT id, modified FROM monitored_file where path = ?")
+        .prepare("SELECT id, modified, path FROM monitored_file where path = ?")
         .unwrap();
     let mut stemq = sqlite
-        .prepare("SELECT id FROM word_stem where stem = ?")
+        .prepare("SELECT id, stem FROM word_stem where stem = ?")
         .unwrap();
 
     for folder in config.get("folder").array() {
@@ -205,16 +208,18 @@ fn index_file(
     path: &str,
     mut file_id: u32,
     punc: &Regex,
-    acc: &Regex,
-    stem: &Stemmer,
+    accents: &Regex,
+    stemmer: &Stemmer,
     last_modified: u64,
     fileq: &mut Statement,
-    stemq: &mut Statement,
+    _stemq: &mut Statement,
 ) {
     let text = fs::read_to_string(path).unwrap();
     let alpha_only = punc.replace_all(&text, " ");
-    let space_split = alpha_only.split_whitespace();
+    let mut space_split = alpha_only.split_whitespace();
     let mut word_count = 0;
+    let mut all_stems = select_all_stems(sqlite);
+    let mut new_stems = Vec::<String>::new();
 
     // Delete any existing index.
     if file_id > 0 {
@@ -226,21 +231,30 @@ fn index_file(
     }
 
     space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
-        let nfd = word.to_string().nfd().collect::<String>();
-        let no_acc = acc.replace_all(&nfd, "").to_lowercase();
-        let stem = stem.stem(&no_acc);
-        let stem_id: u32;
-        let stem_row = select_stem(stemq, &stem);
+        let stem = stem_word(word, accents, stemmer);
+        //let stem_id: u32;
+        //let stem_row = select_stem(stemq, &stem);
 
         // Create a stem if necessary.  Otherwise, use its ID.
-        match stem_row {
-            Some(stem) => stem_id = stem.unwrap().id,
-            None => {
-                stem_id = insert_stem(sqlite, stemq, &stem).unwrap().unwrap().id;
-            }
+        if !all_stems.contains_key(&stem) {
+            new_stems.push(stem);
         }
+        //match stem_row {
+        //    Some(stem) => stem_id = stem.unwrap().id,
+        //    None => {
+        //        stem_id = insert_stem(sqlite, stemq, &stem).unwrap().unwrap().id;
+        //    }
+        //}
 
         // Add the next word-tuple to the index.
+    });
+
+    space_split = alpha_only.split_whitespace();
+
+    all_stems = insert_bulk_stems(sqlite, new_stems);
+    space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
+        let stem = stem_word(word, accents, stemmer);
+        let stem_id = all_stems[&stem];
         insert_word_tuple(sqlite, file_id, stem_id, word_count, &word);
         word_count += 1;
     });
@@ -308,6 +322,17 @@ fn file_mod_time(path: &str) -> u64 {
         .as_secs()
 }
 
+// Get the stem for the current word.
+fn stem_word(
+    word: &str,
+    accents: &Regex,
+    stem: &Stemmer,
+) -> String {
+    let nfd = word.to_string().nfd().collect::<String>();
+    let no_accents = accents.replace_all(&nfd, "").to_lowercase();
+    stem.stem(&no_accents).to_string()
+}
+
 // Retrieve file information.
 fn select_file(
     fileq: &mut Statement,
@@ -318,6 +343,7 @@ fn select_file(
             Ok(MonitoredFile {
                 id: row.get(0).unwrap(),
                 modified: row.get(1).unwrap(),
+                path: row.get(2).unwrap(),
             })
         })
         .unwrap();
@@ -334,11 +360,37 @@ fn select_stem(
         .query_map(params![stem], |row| {
             Ok(WordStem {
                 id: row.get(0).unwrap(),
+                stem: row.get(1).unwrap(),
             })
         })
         .unwrap();
 
     stems.last()
+}
+
+// Retrieve all stem information.
+fn select_all_stems(
+    sqlite: &Connection,
+) -> HashMap<String, u32> {
+    let mut result = HashMap::new();
+    let mut stemq = sqlite.prepare("SELECT id, stem FROM word_stem").unwrap();
+    let stem_iter = stemq.query_map([], |row| {
+        Ok(WordStem {
+            id: row.get(0).unwrap(),
+            stem: row.get(1).unwrap(),
+        })
+    })
+    .unwrap();
+
+    for stem in stem_iter {
+        let raw_stem = stem.unwrap();
+
+        result.insert(
+            raw_stem.stem.to_string(),
+            raw_stem.id,
+        );
+    }
+    result
 }
 
 // Add a file to be indexed.
@@ -370,6 +422,17 @@ fn insert_stem(
         .execute("INSERT INTO word_stem (stem) VALUES(?)", params![stem])
         .unwrap();
     select_stem(stemq, stem)
+}
+
+// Insert a group of stems.
+fn insert_bulk_stems(
+    sqlite: &Connection,
+    stems: Vec<String>,
+) -> HashMap<String, u32> {
+  let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
+  let query = format!("INSERT INTO word_stem (stem) VALUES {}", placeholders);
+  sqlite.execute(&query, params_from_iter(stems.iter())).unwrap();
+  select_all_stems(sqlite)
 }
 
 // Index the file-stem-position tuple.
