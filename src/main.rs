@@ -51,9 +51,6 @@ fn main() {
     let mut fileq = sqlite
         .prepare("SELECT id, modified, path FROM monitored_file where path = ?")
         .unwrap();
-    let mut stemq = sqlite
-        .prepare("SELECT id, stem FROM word_stem where stem = ?")
-        .unwrap();
 
     for folder in config.get("folder").array() {
         let recurse = folder.get("recurse").bool();
@@ -66,7 +63,7 @@ fn main() {
         let path = folder_name.str();
 
         process_folder(
-            &sqlite, path, recurse, &punc, &acc, &stem, &mut fileq, &mut stemq,
+            &sqlite, path, recurse, &punc, &acc, &stem, &mut fileq,
         );
         watcher.watch(path, mode).unwrap();
     }
@@ -91,7 +88,6 @@ fn main() {
                         &stem,
                         last_modified,
                         &mut fileq,
-                        &mut stemq,
                     );
                 }
                 Error(event, _path) => println!("{:?}", event),
@@ -117,7 +113,6 @@ fn process_folder(
     acc: &Regex,
     stem: &Stemmer,
     fileq: &mut Statement,
-    stemq: &mut Statement,
 ) {
     let dir = Path::new(path);
 
@@ -132,7 +127,7 @@ fn process_folder(
         let path_str = entry_path.to_str().unwrap();
 
         if recursive && entry.path().is_dir() {
-            process_folder(sqlite, path_str, recursive, punc, acc, stem, fileq, stemq);
+            process_folder(sqlite, path_str, recursive, punc, acc, stem, fileq);
         } else if entry.path().is_dir() {
             // Should probably do something, but for now, it's just to prevent
             // directories from falling through to be managed as normal files.
@@ -145,7 +140,6 @@ fn process_folder(
                 stem,
                 last_modified,
                 fileq,
-                stemq,
             );
         }
     }
@@ -160,7 +154,6 @@ fn process_file(
     stem: &Stemmer,
     last_modified: u64,
     fileq: &mut Statement,
-    stemq: &mut Statement,
 ) {
     let mod_time = select_file(fileq, path_str);
 
@@ -179,7 +172,6 @@ fn process_file(
                     stem,
                     last_modified,
                     fileq,
-                    stemq,
                 );
             }
         }
@@ -196,7 +188,6 @@ fn process_file(
                 stem,
                 last_modified,
                 fileq,
-                stemq,
             );
         }
     }
@@ -212,7 +203,6 @@ fn index_file(
     stemmer: &Stemmer,
     last_modified: u64,
     fileq: &mut Statement,
-    _stemq: &mut Statement,
 ) {
     let text = fs::read_to_string(path).unwrap();
     let alpha_only = punc.replace_all(&text, " ");
@@ -232,26 +222,15 @@ fn index_file(
 
     space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
         let stem = stem_word(word, accents, stemmer);
-        //let stem_id: u32;
-        //let stem_row = select_stem(stemq, &stem);
 
-        // Create a stem if necessary.  Otherwise, use its ID.
+        // Add the stem to the to-be-created list if necessary.
         if !all_stems.contains_key(&stem) {
             new_stems.push(stem);
         }
-        //match stem_row {
-        //    Some(stem) => stem_id = stem.unwrap().id,
-        //    None => {
-        //        stem_id = insert_stem(sqlite, stemq, &stem).unwrap().unwrap().id;
-        //    }
-        //}
-
-        // Add the next word-tuple to the index.
     });
 
-    space_split = alpha_only.split_whitespace();
-
     all_stems = insert_bulk_stems(sqlite, new_stems);
+    space_split = alpha_only.split_whitespace();
     space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
         let stem = stem_word(word, accents, stemmer);
         let stem_id = all_stems[&stem];
@@ -351,23 +330,6 @@ fn select_file(
     mod_times.last()
 }
 
-// Retrieve stem information.
-fn select_stem(
-    stemq: &mut Statement,
-    stem: &str,
-) -> Option<Result<WordStem, rusqlite::Error>> {
-    let stems = stemq
-        .query_map(params![stem], |row| {
-            Ok(WordStem {
-                id: row.get(0).unwrap(),
-                stem: row.get(1).unwrap(),
-            })
-        })
-        .unwrap();
-
-    stems.last()
-}
-
 // Retrieve all stem information.
 fn select_all_stems(
     sqlite: &Connection,
@@ -410,18 +372,6 @@ fn insert_file(
         )
         .unwrap();
     select_file(fileq, path_str)
-}
-
-// Insert stem for the index.
-fn insert_stem(
-    sqlite: &Connection,
-    stemq: &mut Statement,
-    stem: &str,
-) -> Option<Result<WordStem, rusqlite::Error>> {
-    sqlite
-        .execute("INSERT INTO word_stem (stem) VALUES(?)", params![stem])
-        .unwrap();
-    select_stem(stemq, stem)
 }
 
 // Insert a group of stems.
