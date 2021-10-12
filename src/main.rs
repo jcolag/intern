@@ -32,6 +32,15 @@ struct WordStem {
     stem: String,
 }
 
+#[derive(Debug)]
+struct IndexTuple {
+    id: u32,
+    file: u32,
+    stem: u32,
+    offset: u32,
+    word: String,
+}
+
 fn main() {
     let punc = Regex::new(r"[\x00-\x26\x28-\x2F\x3A-\x40\x5B-\x60\x7B-\x7F]+").unwrap();
     let acc = Regex::new(r"\x{0300}-\x{035f}").unwrap();
@@ -74,6 +83,7 @@ fn main() {
         Err(_) => panic!("Something bad"),
     }
     loop {
+        println!("{:?}", SystemTime::now());
         match rx.recv() {
             Ok(event) => match event {
                 Chmod(event) => println!("{:?}", event),
@@ -210,6 +220,7 @@ fn index_file(
     let mut word_count = 0;
     let mut all_stems = select_all_stems(sqlite);
     let mut new_stems = Vec::<String>::new();
+    let mut new_index_tuples = Vec::<IndexTuple>::new();
 
     // Delete any existing index.
     if file_id > 0 {
@@ -234,9 +245,18 @@ fn index_file(
     space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
         let stem = stem_word(word, accents, stemmer);
         let stem_id = all_stems[&stem];
-        insert_word_tuple(sqlite, file_id, stem_id, word_count, &word);
+        let tuple = IndexTuple {
+            id: 0,
+            file: file_id,
+            stem: stem_id,
+            offset: word_count,
+            word: word.to_string(),
+        };
+        new_index_tuples.push(tuple);
         word_count += 1;
     });
+
+    insert_bulk_word_tuples(sqlite, new_index_tuples);
 }
 
 // Ensure the required tables are available.
@@ -379,26 +399,31 @@ fn insert_bulk_stems(
     sqlite: &Connection,
     stems: Vec<String>,
 ) -> HashMap<String, u32> {
-  let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
-  let query = format!("INSERT INTO word_stem (stem) VALUES {}", placeholders);
-  sqlite.execute(&query, params_from_iter(stems.iter())).unwrap();
-  select_all_stems(sqlite)
+    let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
+    let query = format!("INSERT INTO word_stem (stem) VALUES {}", placeholders);
+    sqlite.execute(&query, params_from_iter(stems.iter())).unwrap();
+    select_all_stems(sqlite)
 }
 
-// Index the file-stem-position tuple.
-fn insert_word_tuple(
+// Index a file's file-stem-position tuples.
+fn insert_bulk_word_tuples(
     sqlite: &Connection,
-    file_id: u32,
-    stem_id: u32,
-    word_count: u32,
-    word: &str,
+    words: Vec<IndexTuple>,
 ) {
-    sqlite
-        .execute(
-            "INSERT INTO file_reverse_index (file,stem,offset,word) VALUES(?,?,?,?)",
-            params![file_id, stem_id, word_count, word],
-        )
-        .unwrap();
+    let placeholders = words.iter().map(|_| "(?,?,?,?)").collect::<Vec<_>>().join(", ");
+    let query = format!(
+        "INSERT INTO file_reverse_index (file,stem,offset,word) VALUES {}", placeholders
+    );
+    let mut values = Vec::<String>::new();
+
+    for word in words {
+        values.push(word.file.to_string());
+        values.push(word.stem.to_string());
+        values.push(word.offset.to_string());
+        values.push(word.word);
+    }
+
+    sqlite.execute(&query, params_from_iter(values.iter())).unwrap();
 }
 
 // Update file's last modification time.
