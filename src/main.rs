@@ -6,7 +6,15 @@ extern crate rust_stemmers;
 extern crate unicode_normalization;
 
 use notify::DebouncedEvent::{
-    Chmod, Create, Error, NoticeRemove, NoticeWrite, Remove, Rename, Rescan, Write,
+    Chmod,
+    Create,
+    Error,
+    NoticeRemove,
+    NoticeWrite,
+    Remove,
+    Rename,
+    Rescan,
+    Write as NotifyWrite,
 };
 use notify::{watcher, RecursiveMode, Watcher};
 use regex::Regex;
@@ -77,13 +85,12 @@ fn main() {
         watcher.watch(path, mode).unwrap();
     }
 
-    println!("Indexing complete.  Monitoring...");
     match SystemTime::now().duration_since(start) {
         Ok(n) => println!("{} seconds", n.as_secs()),
         Err(_) => panic!("Something bad"),
     }
+
     loop {
-        println!("{:?}", SystemTime::now());
         match rx.recv() {
             Ok(event) => match event {
                 Chmod(event) => println!("{:?}", event),
@@ -106,7 +113,7 @@ fn main() {
                 Remove(event) => println!("{:?}", event),
                 Rename(old, new) => println!("{:?} => {:?}", old, new),
                 Rescan => println!("{:?}", event),
-                Write(path) => println!("{:?}", path),
+                NotifyWrite(path) => println!("{:?}", path),
             },
             Err(e) => println!("watch error: {:?}", e),
         }
@@ -329,7 +336,7 @@ fn stem_word(
 ) -> String {
     let nfd = word.to_string().nfd().collect::<String>();
     let no_accents = accents.replace_all(&nfd, "").to_lowercase();
-    stem.stem(&no_accents).to_string()
+    stem.stem(&no_accents).trim().to_string()
 }
 
 // Retrieve file information.
@@ -372,6 +379,7 @@ fn select_all_stems(
             raw_stem.id,
         );
     }
+
     result
 }
 
@@ -401,6 +409,11 @@ fn insert_bulk_stems(
 ) -> HashMap<String, u32> {
     let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
     let query = format!("INSERT INTO word_stem (stem) VALUES {}", placeholders);
+
+    if stems.is_empty() {
+        return select_all_stems(sqlite);
+    }
+
     sqlite.execute(&query, params_from_iter(stems.iter())).unwrap();
     select_all_stems(sqlite)
 }
@@ -415,6 +428,10 @@ fn insert_bulk_word_tuples(
         "INSERT INTO file_reverse_index (file,stem,offset,word) VALUES {}", placeholders
     );
     let mut values = Vec::<String>::new();
+
+    if words.is_empty() {
+        return;
+    }
 
     for word in words {
         values.push(word.file.to_string());
