@@ -5,6 +5,8 @@ extern crate rusqlite;
 extern crate rust_stemmers;
 extern crate unicode_normalization;
 
+use mio::{Events, Interest, Poll, Token};
+use mio::net::{TcpListener};
 use notify::DebouncedEvent::{
     Chmod,
     Create,
@@ -21,7 +23,8 @@ use regex::Regex;
 use rusqlite::{params, params_from_iter, Connection, Statement};
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::HashMap;
-use std::fs;
+use std::{fs, io, str};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -62,6 +65,11 @@ fn main() {
     let mut watcher = watcher(tx, Duration::from_secs(check_period)).unwrap();
     let sqlite = Connection::open(db_path.as_path()).unwrap();
     let start = SystemTime::now();
+    let server_addr = "0.0.0.0:48813".parse().unwrap();
+    let mut server = TcpListener::bind(server_addr).unwrap();
+    let mut server_poll = Poll::new().unwrap();
+    let mut events = Events::with_capacity(1024);
+    let server_token: Token = Token(0);
 
     enforce_data_model(&sqlite);
 
@@ -85,13 +93,19 @@ fn main() {
         watcher.watch(path, mode).unwrap();
     }
 
+    server_poll
+        .registry()
+        .register(
+            &mut server, server_token, Interest::READABLE
+        )
+    .unwrap();
     match SystemTime::now().duration_since(start) {
         Ok(n) => println!("{} seconds", n.as_secs()),
         Err(_) => panic!("Something bad"),
     }
 
     loop {
-        match rx.recv() {
+        match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => match event {
                 Chmod(event) => println!("{:?}", event),
                 Create(epath) => {
@@ -115,8 +129,21 @@ fn main() {
                 Rescan => println!("{:?}", event),
                 NotifyWrite(path) => println!("{:?}", path),
             },
-            Err(e) => println!("watch error: {:?}", e),
+            Err(e) => {
+                if e != std::sync::mpsc::RecvTimeoutError::Timeout {
+                    println!("watch error: {:#?}", e);
+                }
+            },
         }
+
+        server_poll.poll(&mut events, Some(Duration::from_millis(100))).unwrap();
+        handle_queries(
+            &sqlite,
+            &events,
+            &server,
+            &server_poll,
+            server_token
+        );
     }
 }
 
@@ -464,4 +491,44 @@ fn clear_index_for(sqlite: &Connection, file_id: u32) {
             params![file_id],
         )
         .unwrap();
+}
+
+// Accept requests for searches and return any search results.
+fn handle_queries(
+    _sqlite: &Connection,
+    events: &Events,
+    server: &TcpListener,
+    server_poll: &Poll,
+    server_token: Token,
+) {
+    for _event in events.iter() {
+        let (mut client, _addr) = match server.accept() {
+            Ok((client, _addr)) => (client, _addr),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                break;
+            }
+            Err(e) => {
+                println!("{:?}", e);
+                return;
+            }
+        };
+        let mut buffer = [0; 4096];
+
+        server_poll.registry().register(
+            &mut client,
+            server_token,
+            Interest::READABLE.add(Interest::WRITABLE),
+        )
+        .unwrap();
+        match client.read(&mut buffer) {
+            Ok(_) => {
+                let query = str::from_utf8(&buffer).unwrap();
+                println!("{}", query);
+                client.write(query.as_bytes()).unwrap();
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => println!("{:#?}", e),
+        }
+    }
 }

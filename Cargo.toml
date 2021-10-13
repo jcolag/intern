@@ -8,6 +8,7 @@ edition = "2018"
 [dependencies]
 dirs = "4.0"
 gjson = "0.8"
+mio = { version = "0.7", features = ["os-poll", "tcp"] }
 notify = "4.0.17"
 regex = "1.5.4"
 rusqlite = "0.26.0"
