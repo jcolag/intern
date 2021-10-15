@@ -5,17 +5,11 @@ extern crate rusqlite;
 extern crate rust_stemmers;
 extern crate unicode_normalization;
 
+use gitignore;
+use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use mio::net::{TcpListener};
 use notify::DebouncedEvent::{
-    Chmod,
-    Create,
-    Error,
-    NoticeRemove,
-    NoticeWrite,
-    Remove,
-    Rename,
-    Rescan,
+    Chmod, Create, Error, NoticeRemove, NoticeWrite, Remove, Rename, Rescan,
     Write as NotifyWrite,
 };
 use notify::{watcher, RecursiveMode, Watcher};
@@ -23,11 +17,11 @@ use regex::Regex;
 use rusqlite::{params, params_from_iter, Connection, Statement};
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::HashMap;
-use std::{fs, io, str};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fs, io, str};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug)]
@@ -50,6 +44,12 @@ struct IndexTuple {
     stem: u32,
     offset: u32,
     word: String,
+}
+
+#[derive(Debug)]
+struct IgnoreFile<'a> {
+    path: String,
+    file: gitignore::File<'a>,
 }
 
 fn main() {
@@ -88,17 +88,22 @@ fn main() {
         let path = folder_name.str();
 
         process_folder(
-            &sqlite, path, recurse, &punc, &acc, &stem, &mut fileq,
+            &sqlite,
+            path,
+            recurse,
+            &punc,
+            &acc,
+            &stem,
+            &mut fileq,
+            &Vec::<PathBuf>::new(),
         );
         watcher.watch(path, mode).unwrap();
     }
 
     server_poll
         .registry()
-        .register(
-            &mut server, server_token, Interest::READABLE
-        )
-    .unwrap();
+        .register(&mut server, server_token, Interest::READABLE)
+        .unwrap();
     match SystemTime::now().duration_since(start) {
         Ok(n) => println!("{} seconds", n.as_secs()),
         Err(_) => panic!("Something bad"),
@@ -133,17 +138,13 @@ fn main() {
                 if e != std::sync::mpsc::RecvTimeoutError::Timeout {
                     println!("watch error: {:#?}", e);
                 }
-            },
+            }
         }
 
-        server_poll.poll(&mut events, Some(Duration::from_millis(100))).unwrap();
-        handle_queries(
-            &sqlite,
-            &events,
-            &server,
-            &server_poll,
-            server_token
-        );
+        server_poll
+            .poll(&mut events, Some(Duration::from_millis(100)))
+            .unwrap();
+        handle_queries(&sqlite, &events, &server, &server_poll, server_token);
     }
 }
 
@@ -157,11 +158,37 @@ fn process_folder(
     acc: &Regex,
     stem: &Stemmer,
     fileq: &mut Statement,
+    ignored: &Vec<PathBuf>,
 ) {
     let dir = Path::new(path);
+    let filename = dir.file_name().unwrap();
+    let gitignore = dir.join(".gitignore");
+    let hgignore = dir.join(".hgignore");
+    let mut ignores = Vec::<IgnoreFile>::new();
 
-    if !dir.is_dir() {
+    if !dir.is_dir() || filename == ".git" || filename == ".hg" {
         return;
+    }
+
+    ignored.iter().for_each(|i| {
+        ignores.push(IgnoreFile {
+            path: String::from(i.as_path().to_str().unwrap()),
+            file: gitignore::File::new(&i).unwrap(),
+        });
+    });
+
+    if gitignore.exists() {
+        ignores.push(IgnoreFile {
+            path: String::from(gitignore.as_path().to_str().unwrap()),
+            file: gitignore::File::new(&gitignore).unwrap(),
+        });
+    }
+
+    if hgignore.exists() {
+        ignores.push(IgnoreFile {
+            path: String::from(hgignore.as_path().to_str().unwrap()),
+            file: gitignore::File::new(&hgignore).unwrap(),
+        });
     }
 
     for entry in fs::read_dir(dir).expect("Cannot read directory") {
@@ -171,20 +198,29 @@ fn process_folder(
         let path_str = entry_path.to_str().unwrap();
 
         if recursive && entry.path().is_dir() {
-            process_folder(sqlite, path_str, recursive, punc, acc, stem, fileq);
+            process_folder(
+                sqlite,
+                path_str,
+                recursive,
+                punc,
+                acc,
+                stem,
+                fileq,
+                &ignores.iter().map(|i| PathBuf::from(&i.path)).collect(),
+            );
         } else if entry.path().is_dir() {
             // Should probably do something, but for now, it's just to prevent
             // directories from falling through to be managed as normal files.
         } else {
-            process_file(
-                sqlite,
-                path_str,
-                punc,
-                acc,
-                stem,
-                last_modified,
-                fileq,
-            );
+            let mut ignore = false;
+            for i in 0..ignores.len() {
+                ignore =
+                    ignore || ignores[i].file.is_excluded(Path::new(&path_str)).unwrap();
+            }
+
+            if !ignore {
+                process_file(sqlite, path_str, punc, acc, stem, last_modified, fileq);
+            }
         }
     }
 }
@@ -356,11 +392,7 @@ fn file_mod_time(path: &str) -> u64 {
 }
 
 // Get the stem for the current word.
-fn stem_word(
-    word: &str,
-    accents: &Regex,
-    stem: &Stemmer,
-) -> String {
+fn stem_word(word: &str, accents: &Regex, stem: &Stemmer) -> String {
     let nfd = word.to_string().nfd().collect::<String>();
     let no_accents = accents.replace_all(&nfd, "").to_lowercase();
     stem.stem(&no_accents).trim().to_string()
@@ -385,26 +417,22 @@ fn select_file(
 }
 
 // Retrieve all stem information.
-fn select_all_stems(
-    sqlite: &Connection,
-) -> HashMap<String, u32> {
+fn select_all_stems(sqlite: &Connection) -> HashMap<String, u32> {
     let mut result = HashMap::new();
     let mut stemq = sqlite.prepare("SELECT id, stem FROM word_stem").unwrap();
-    let stem_iter = stemq.query_map([], |row| {
-        Ok(WordStem {
-            id: row.get(0).unwrap(),
-            stem: row.get(1).unwrap(),
+    let stem_iter = stemq
+        .query_map([], |row| {
+            Ok(WordStem {
+                id: row.get(0).unwrap(),
+                stem: row.get(1).unwrap(),
+            })
         })
-    })
-    .unwrap();
+        .unwrap();
 
     for stem in stem_iter {
         let raw_stem = stem.unwrap();
 
-        result.insert(
-            raw_stem.stem.to_string(),
-            raw_stem.id,
-        );
+        result.insert(raw_stem.stem.to_string(), raw_stem.id);
     }
 
     result
@@ -430,10 +458,7 @@ fn insert_file(
 }
 
 // Insert a group of stems.
-fn insert_bulk_stems(
-    sqlite: &Connection,
-    stems: Vec<String>,
-) -> HashMap<String, u32> {
+fn insert_bulk_stems(sqlite: &Connection, stems: Vec<String>) -> HashMap<String, u32> {
     let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
     let query = format!("INSERT INTO word_stem (stem) VALUES {}", placeholders);
 
@@ -441,18 +466,22 @@ fn insert_bulk_stems(
         return select_all_stems(sqlite);
     }
 
-    sqlite.execute(&query, params_from_iter(stems.iter())).unwrap();
+    sqlite
+        .execute(&query, params_from_iter(stems.iter()))
+        .unwrap();
     select_all_stems(sqlite)
 }
 
 // Index a file's file-stem-position tuples.
-fn insert_bulk_word_tuples(
-    sqlite: &Connection,
-    words: Vec<IndexTuple>,
-) {
-    let placeholders = words.iter().map(|_| "(?,?,?,?)").collect::<Vec<_>>().join(", ");
+fn insert_bulk_word_tuples(sqlite: &Connection, words: Vec<IndexTuple>) {
+    let placeholders = words
+        .iter()
+        .map(|_| "(?,?,?,?)")
+        .collect::<Vec<_>>()
+        .join(", ");
     let query = format!(
-        "INSERT INTO file_reverse_index (file,stem,offset,word) VALUES {}", placeholders
+        "INSERT INTO file_reverse_index (file,stem,offset,word) VALUES {}",
+        placeholders
     );
     let mut values = Vec::<String>::new();
 
@@ -467,7 +496,9 @@ fn insert_bulk_word_tuples(
         values.push(word.word);
     }
 
-    sqlite.execute(&query, params_from_iter(values.iter())).unwrap();
+    sqlite
+        .execute(&query, params_from_iter(values.iter()))
+        .unwrap();
 }
 
 // Update file's last modification time.
@@ -514,12 +545,14 @@ fn handle_queries(
         };
         let mut buffer = [0; 4096];
 
-        server_poll.registry().register(
-            &mut client,
-            server_token,
-            Interest::READABLE.add(Interest::WRITABLE),
-        )
-        .unwrap();
+        server_poll
+            .registry()
+            .register(
+                &mut client,
+                server_token,
+                Interest::READABLE.add(Interest::WRITABLE),
+            )
+            .unwrap();
         match client.read(&mut buffer) {
             Ok(_) => {
                 let query = str::from_utf8(&buffer).unwrap();

@@ -7,6 +7,7 @@ edition = "2018"
 
 [dependencies]
 dirs = "4.0"
+gitignore = "1.0.7"
 gjson = "0.8"
 mio = { version = "0.7", features = ["os-poll", "tcp"] }
 notify = "4.0.17"
