@@ -23,6 +23,7 @@ use std::sync::mpsc::channel;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, io, str};
 use unicode_normalization::UnicodeNormalization;
+use walkdir::WalkDir;
 
 #[derive(Debug)]
 struct MonitoredFile {
@@ -86,6 +87,14 @@ fn main() {
         };
         let folder_name = folder.get("name");
         let path = folder_name.str();
+        let ignoregit = Path::new(path).join(".gitignore");
+        let ignorehg = Path::new(path).join(".gitignore");
+        let ignores = if ignoregit.exists() {
+            gitignore::File::new(&ignoregit)
+        } else {
+            // This will produce an error, if neither file exists.
+            gitignore::File::new(&ignorehg)
+        };
 
         process_folder(
             &sqlite,
@@ -98,6 +107,17 @@ fn main() {
             &Vec::<PathBuf>::new(),
         );
         watcher.watch(path, mode).unwrap();
+        for entry in WalkDir::new(path)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                match &ignores {
+                    Ok(ignore) => ignore.is_excluded(e.path()).unwrap(),
+                    Err(_) => false, // No ignore file
+                }
+            }) {
+                watcher.unwatch(entry.path()).unwrap();
+            }
     }
 
     server_poll
@@ -116,6 +136,11 @@ fn main() {
                 Create(epath) => {
                     let path = epath.to_str().unwrap();
                     let last_modified = file_mod_time(path);
+
+                    if path.contains(".git") || path.contains(".hg") || path.ends_with(".svg") {
+                        continue;
+                    }
+
                     process_file(
                         &sqlite,
                         path,
@@ -284,7 +309,7 @@ fn index_file(
     last_modified: u64,
     fileq: &mut Statement,
 ) {
-    let text = fs::read_to_string(path).unwrap();
+    let text = fs::read_to_string(path).unwrap_or("".to_string());
     let alpha_only = punc.replace_all(&text, " ");
     let mut space_split = alpha_only.split_whitespace();
     let mut word_count = 0;
