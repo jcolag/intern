@@ -498,32 +498,49 @@ fn insert_bulk_stems(sqlite: &Connection, stems: Vec<String>) -> HashMap<String,
 }
 
 // Index a file's file-stem-position tuples.
-fn insert_bulk_word_tuples(sqlite: &Connection, words: Vec<IndexTuple>) {
-    let placeholders = words
-        .iter()
-        .map(|_| "(?,?,?,?)")
-        .collect::<Vec<_>>()
-        .join(", ");
-    let query = format!(
-        "INSERT INTO file_reverse_index (file,stem,offset,word) VALUES {}",
-        placeholders
-    );
-    let mut values = Vec::<String>::new();
+fn insert_bulk_word_tuples(sqlite: &Connection, mut words: Vec<IndexTuple>) {
+    let mut remainder = Vec::<IndexTuple>::new();
+    let max_values = 8192;
 
     if words.is_empty() {
         return;
     }
 
-    for word in words {
-        values.push(word.file.to_string());
-        values.push(word.stem.to_string());
-        values.push(word.offset.to_string());
-        values.push(word.word);
-    }
+    loop {
+        if words.len() > max_values {
+            remainder = words.split_off(max_values);
+        }
 
-    sqlite
-        .execute(&query, params_from_iter(values.iter()))
-        .unwrap();
+        let placeholders = words
+            .iter()
+            .map(|_| "(?,?,?,?)")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            "INSERT INTO file_reverse_index (file,stem,offset,word) VALUES {}",
+            placeholders
+        );
+        let mut values = Vec::<String>::new();
+
+        for word in words {
+            values.push(word.file.to_string());
+            values.push(word.stem.to_string());
+            values.push(word.offset.to_string());
+            values.push(word.word.to_string());
+        }
+
+        match sqlite
+            .execute(&query, params_from_iter(values.iter())) {
+                Ok(_) => (),
+                Err(e) => panic!("Error:  {}", e),
+            }
+
+        words = remainder;
+        remainder = Vec::<IndexTuple>::new();
+        if words.is_empty() {
+            break;
+        }
+    }
 }
 
 // Update file's last modification time.
