@@ -23,7 +23,6 @@ use std::sync::mpsc::channel;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, io, str};
 use unicode_normalization::UnicodeNormalization;
-use walkdir::WalkDir;
 
 #[derive(Debug)]
 struct MonitoredFile {
@@ -106,18 +105,26 @@ fn main() {
             &mut fileq,
             &Vec::<PathBuf>::new(),
         );
-        watcher.watch(path, mode).unwrap();
-        for entry in WalkDir::new(path)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| {
-                match &ignores {
-                    Ok(ignore) => ignore.is_excluded(e.path()).unwrap(),
-                    Err(_) => false, // No ignore file
-                }
-            }) {
-                watcher.unwatch(entry.path()).unwrap();
+        match &ignores {
+            Ok(ignore) => {
+                // Either un-watching or ignore status doesn't work as
+                // expected, so we flip the logic, only watching
+                // non-ignored files.
+                watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
+                ignore.included_files().into_iter().for_each(|files| {
+                    files.into_iter().for_each(|include| {
+                        watcher
+                            .watch(
+                                Path::new(include.to_str().unwrap()),
+                                RecursiveMode::NonRecursive,
+                            )
+                            .unwrap();
+                    });
+                });
             }
+            // Not an error; just no ignore file
+            Err(_) => watcher.watch(path, mode).unwrap(),
+        }
     }
 
     server_poll
@@ -137,10 +144,14 @@ fn main() {
                     let path = epath.to_str().unwrap();
                     let last_modified = file_mod_time(path);
 
-                    if path.contains(".git") || path.contains(".hg") || path.ends_with(".svg") {
+                    if path.contains(".git")
+                        || path.contains(".hg")
+                        || path.ends_with(".svg")
+                    {
                         continue;
                     }
 
+                    watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
                     process_file(
                         &sqlite,
                         path,
@@ -529,11 +540,10 @@ fn insert_bulk_word_tuples(sqlite: &Connection, mut words: Vec<IndexTuple>) {
             values.push(word.word.to_string());
         }
 
-        match sqlite
-            .execute(&query, params_from_iter(values.iter())) {
-                Ok(_) => (),
-                Err(e) => panic!("Error:  {}", e),
-            }
+        match sqlite.execute(&query, params_from_iter(values.iter())) {
+            Ok(_) => (),
+            Err(e) => panic!("Error:  {}", e),
+        }
 
         words = remainder;
         remainder = Vec::<IndexTuple>::new();
@@ -598,7 +608,6 @@ fn handle_queries(
         match client.read(&mut buffer) {
             Ok(_) => {
                 let query = str::from_utf8(&buffer).unwrap();
-                println!("{}", query);
                 client.write(query.as_bytes()).unwrap();
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
