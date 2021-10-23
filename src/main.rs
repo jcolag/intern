@@ -139,7 +139,7 @@ fn main() {
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => match event {
-                Chmod(event) => println!("{:?}", event),
+                Chmod(event) => println!("chmod {:?}", event),
                 Create(epath) => {
                     let path = epath.to_str().unwrap();
                     let last_modified = file_mod_time(path);
@@ -162,13 +162,13 @@ fn main() {
                         &mut fileq,
                     );
                 }
-                Error(event, _path) => println!("{:?}", event),
-                NoticeRemove(event) => println!("{:?}", event),
-                NoticeWrite(event) => println!("{:?}", event),
-                Remove(event) => println!("{:?}", event),
+                Error(event, _path) => println!("error {:?}", event),
+                NoticeRemove(event) => println!("nremove {:?}", event),
+                NoticeWrite(event) => println!("write {:?}", event),
+                Remove(event) => println!("remove {:?}", event),
                 Rename(old, new) => println!("{:?} => {:?}", old, new),
-                Rescan => println!("{:?}", event),
-                NotifyWrite(path) => println!("{:?}", path),
+                Rescan => println!("rescan {:?}", event),
+                NotifyWrite(path) => println!("nwrite {:?}", path),
             },
             Err(e) => {
                 if e != std::sync::mpsc::RecvTimeoutError::Timeout {

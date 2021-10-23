@@ -15,5 +15,4 @@ regex = "1.5.4"
 rusqlite = "0.26.0"
 rust-stemmers = "1.2.0"
 unicode-normalization = "0.1.19"
-walkdir = "2.3.2"
 
