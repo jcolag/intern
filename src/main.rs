@@ -52,6 +52,13 @@ struct IgnoreFile<'a> {
     file: gitignore::File<'a>,
 }
 
+#[derive(Debug)]
+struct SearchResult {
+    path: String,
+    word: String,
+    offset: u32,
+}
+
 fn main() {
     let punc = Regex::new(r"[\x00-\x26\x28-\x2F\x3A-\x40\x5B-\x60\x7B-\x7F]+").unwrap();
     let acc = Regex::new(r"\x{0300}-\x{035f}").unwrap();
@@ -180,7 +187,16 @@ fn main() {
         server_poll
             .poll(&mut events, Some(Duration::from_millis(100)))
             .unwrap();
-        handle_queries(&sqlite, &events, &server, &server_poll, server_token);
+        handle_queries(
+            &sqlite,
+            &events,
+            &server,
+            &server_poll,
+            server_token,
+            &punc,
+            &acc,
+            &stem,
+        );
     }
 }
 
@@ -576,13 +592,39 @@ fn clear_index_for(sqlite: &Connection, file_id: u32) {
         .unwrap();
 }
 
+fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> {
+    let mut result = Vec::<SearchResult>::new();
+    let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
+    let query = format!(
+        "SELECT f.path, i.word, i.offset FROM file_reverse_index i JOIN monitored_file f ON f.id = i.file WHERE i.stem IN ({})",
+        placeholders
+    );
+    let ids = stems.iter().map(|s| s.id );
+    let mut stemq = sqlite.prepare(&query).unwrap();
+    let index_entries = stemq
+        .query_map(params_from_iter(ids), |row| {
+            Ok(SearchResult {
+                path: row.get(0).unwrap(),
+                word: row.get(1).unwrap(),
+                offset: row.get(2).unwrap(),
+            })
+        })
+        .unwrap();
+
+    index_entries.for_each(|ie| result.push(ie.unwrap()));
+    result
+}
+
 // Accept requests for searches and return any search results.
 fn handle_queries(
-    _sqlite: &Connection,
+    sqlite: &Connection,
     events: &Events,
     server: &TcpListener,
     server_poll: &Poll,
     server_token: Token,
+    punc: &Regex,
+    accents: &Regex,
+    stemmer: &Stemmer,
 ) {
     for _event in events.iter() {
         let (mut client, _addr) = match server.accept() {
@@ -608,6 +650,25 @@ fn handle_queries(
         match client.read(&mut buffer) {
             Ok(_) => {
                 let query = str::from_utf8(&buffer).unwrap();
+                let alpha_only = punc.replace_all(&query, " ");
+                let space_split = alpha_only.split_whitespace();
+                let all_stems = select_all_stems(sqlite);
+                let mut new_stems = Vec::<WordStem>::new();
+
+                space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
+                    let stem = stem_word(word, accents, stemmer);
+                    let id = if all_stems.contains_key(&stem) {
+                        all_stems[&stem]
+                    } else {
+                        0
+                    };
+
+                    new_stems.push(WordStem { id: id, stem: stem });
+                });
+
+                let search_results = search_index(sqlite, new_stems);
+                println!("{:#?}", search_results);
+
                 client.write(query.as_bytes()).unwrap();
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
