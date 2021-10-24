@@ -56,6 +56,7 @@ struct IgnoreFile<'a> {
 struct SearchResult {
     path: String,
     word: String,
+    stem: u32,
     offset: u32,
 }
 
@@ -596,7 +597,7 @@ fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> 
     let mut result = Vec::<SearchResult>::new();
     let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
     let query = format!(
-        "SELECT f.path, i.word, i.offset FROM file_reverse_index i JOIN monitored_file f ON f.id = i.file WHERE i.stem IN ({})",
+        "SELECT f.path, i.word, i.stem, i.offset FROM file_reverse_index i JOIN monitored_file f ON f.id = i.file WHERE i.stem IN ({}) ORDER BY f.path, i.offset",
         placeholders
     );
     let ids = stems.iter().map(|s| s.id );
@@ -606,7 +607,8 @@ fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> 
             Ok(SearchResult {
                 path: row.get(0).unwrap(),
                 word: row.get(1).unwrap(),
-                offset: row.get(2).unwrap(),
+                stem: row.get(2).unwrap(),
+                offset: row.get(3).unwrap(),
             })
         })
         .unwrap();
