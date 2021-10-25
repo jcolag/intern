@@ -597,7 +597,7 @@ fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> 
     let mut result = Vec::<SearchResult>::new();
     let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
     let query = format!(
-        "SELECT f.path, i.word, i.stem, i.offset FROM file_reverse_index i JOIN monitored_file f ON f.id = i.file WHERE i.stem IN ({}) ORDER BY f.path, i.offset",
+        "SELECT f.path, i.word, i.stem, i.offset FROM file_reverse_index i JOIN monitored_file f ON f.id = i.file WHERE i.stem IN ({}) ORDER BY f.path, i.stem, i.offset",
         placeholders
     );
     let ids = stems.iter().map(|s| s.id );
@@ -614,6 +614,61 @@ fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> 
         .unwrap();
 
     index_entries.for_each(|ie| result.push(ie.unwrap()));
+    result
+}
+
+// Organize a list sorted by file, stem, and offset
+fn collate_search(search: Vec<SearchResult>) -> HashMap<String, HashMap<u32, Vec<SearchResult>>> {
+    let mut result = HashMap::<String, HashMap<u32, Vec<SearchResult>>>::new();
+    let mut by_stem = Vec::<SearchResult>::new();
+    let mut by_file = HashMap::<u32, Vec<SearchResult>>::new();
+    let mut last_stem = 0;
+    let mut last_file = "";
+
+    search.iter().for_each(|sr| {
+        if (sr.stem != last_stem || sr.path != last_file) && !by_stem.is_empty() {
+            let mut stems = Vec::<SearchResult>::new();
+
+            by_stem.iter().for_each(|s| stems.push(SearchResult {
+                path: s.path.to_string(),
+                word: s.word.to_string(),
+                stem: s.stem,
+                offset: s.offset,
+            }));
+            by_file.insert(last_stem, stems);
+            by_stem = Vec::<SearchResult>::new();
+            last_stem = sr.stem;
+        }
+
+        if sr.path != last_file {
+            let mut files = HashMap::<u32, Vec<SearchResult>>::new();
+
+            by_file.keys().for_each(|k| {
+                let mut stems = Vec::<SearchResult>::new();
+
+                by_file[&k].iter().for_each(|s| {
+                    stems.push(SearchResult {
+                        path: s.path.to_string(),
+                        word: s.word.to_string(),
+                        stem: s.stem,
+                        offset: s.offset,
+                    });
+                });
+                files.insert(*k, stems);
+            });
+            result.insert(last_file.to_string(), files);
+            by_file = HashMap::<u32, Vec<SearchResult>>::new();
+            last_file = &sr.path;
+        }
+
+        by_stem.push(SearchResult {
+            path: sr.path.to_string(),
+            word: sr.word.to_string(),
+            stem: sr.stem,
+            offset: sr.offset,
+        });
+    });
+
     result
 }
 
@@ -669,7 +724,8 @@ fn handle_queries(
                 });
 
                 let search_results = search_index(sqlite, new_stems);
-                println!("{:#?}", search_results);
+                let serps = collate_search(search_results);
+                println!("{:#?}", serps);
 
                 client.write(query.as_bytes()).unwrap();
             }
