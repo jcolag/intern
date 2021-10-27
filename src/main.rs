@@ -593,6 +593,7 @@ fn clear_index_for(sqlite: &Connection, file_id: u32) {
         .unwrap();
 }
 
+// Retrieve stem information from the index.
 fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> {
     let mut result = Vec::<SearchResult>::new();
     let placeholders = stems.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
@@ -600,7 +601,7 @@ fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> 
         "SELECT f.path, i.word, i.stem, i.offset FROM file_reverse_index i JOIN monitored_file f ON f.id = i.file WHERE i.stem IN ({}) ORDER BY f.path, i.stem, i.offset",
         placeholders
     );
-    let ids = stems.iter().map(|s| s.id );
+    let ids = stems.iter().map(|s| s.id);
     let mut stemq = sqlite.prepare(&query).unwrap();
     let index_entries = stemq
         .query_map(params_from_iter(ids), |row| {
@@ -618,7 +619,14 @@ fn search_index(sqlite: &Connection, stems: Vec<WordStem>) -> Vec<SearchResult> 
 }
 
 // Organize a list sorted by file, stem, and offset
-fn collate_search(search: Vec<SearchResult>) -> HashMap<String, HashMap<u32, Vec<SearchResult>>> {
+//
+// Note that some of this code is clunky, copying data back and forth
+// between objects, to make sure that we don't violate Rust's ownership
+// rules.
+fn collate_search(
+    search: Vec<SearchResult>,
+    stem_ids: Vec<u32>,
+) -> HashMap<String, HashMap<u32, Vec<SearchResult>>> {
     let mut result = HashMap::<String, HashMap<u32, Vec<SearchResult>>>::new();
     let mut by_stem = Vec::<SearchResult>::new();
     let mut by_file = HashMap::<u32, Vec<SearchResult>>::new();
@@ -626,22 +634,37 @@ fn collate_search(search: Vec<SearchResult>) -> HashMap<String, HashMap<u32, Vec
     let mut last_file = "";
 
     search.iter().for_each(|sr| {
-        if (sr.stem != last_stem || sr.path != last_file) && !by_stem.is_empty() {
+        // We don't actually want special behavior on the first run,
+        // so we fake having a previous run with these conditions.
+        if last_file == "" {
+            last_file = &sr.path;
+        }
+
+        if last_stem == 0 {
+            last_stem = sr.stem;
+        }
+
+        // Reset the stem list when the stem or file changes.
+        if sr.stem != last_stem || sr.path != last_file {
             let mut stems = Vec::<SearchResult>::new();
 
-            by_stem.iter().for_each(|s| stems.push(SearchResult {
-                path: s.path.to_string(),
-                word: s.word.to_string(),
-                stem: s.stem,
-                offset: s.offset,
-            }));
+            by_stem.iter().for_each(|s| {
+                stems.push(SearchResult {
+                    path: s.path.to_string(),
+                    word: s.word.to_string(),
+                    stem: s.stem,
+                    offset: s.offset,
+                })
+            });
             by_file.insert(last_stem, stems);
             by_stem = Vec::<SearchResult>::new();
             last_stem = sr.stem;
         }
 
+        // Reset the file list when the file changes.
         if sr.path != last_file {
             let mut files = HashMap::<u32, Vec<SearchResult>>::new();
+            let mut all_found = true;
 
             by_file.keys().for_each(|k| {
                 let mut stems = Vec::<SearchResult>::new();
@@ -656,7 +679,13 @@ fn collate_search(search: Vec<SearchResult>) -> HashMap<String, HashMap<u32, Vec
                 });
                 files.insert(*k, stems);
             });
-            result.insert(last_file.to_string(), files);
+            stem_ids
+                .iter()
+                .for_each(|s| all_found &= files.contains_key(s));
+            if all_found {
+                result.insert(last_file.to_string(), files);
+            }
+
             by_file = HashMap::<u32, Vec<SearchResult>>::new();
             last_file = &sr.path;
         }
