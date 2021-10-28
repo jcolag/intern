@@ -701,6 +701,48 @@ fn collate_search(
     result
 }
 
+// Sort search results for relevance, returning the ordered file names.
+fn sort_search_results(
+    search: &HashMap<String, HashMap<u32, Vec<SearchResult>>>,
+    query: Vec::<&str>,
+) -> Vec<String> {
+    let mut result = Vec::<String>::new();
+    let mut ranking = HashMap::<String, f32>::new();
+
+    // Each time a literal search term appears in the file, rather than
+    // just the stem, increase the score.
+    search.keys().for_each(|k| {
+        let mut score = 1.0;
+        let stems = &search[k];
+        let offsets = Vec::<Vec::<u32>>::new();
+
+        stems.keys().for_each(|s| {
+            let words = &stems[s];
+
+            words.iter().map(|w| w.word.to_string()).for_each(|w|
+                if query.contains(&w.as_str()) {
+                    score *= 1.1;
+                }
+            );
+        });
+        ranking.insert(k.to_string(), score);
+    });
+    // Sort the files by their scores.
+    ranking.keys().for_each(|k| result.push(k.to_string()));
+    result.sort_by(|a,b| if ranking[a] > ranking[b] {
+            std::cmp::Ordering::Greater
+        } else if ranking[a] < ranking[b] {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        });
+    // We need an empty, because something about the response to
+    // the client cuts off the final characters.
+    result.push("".to_string());
+
+    result
+}
+
 // Accept requests for searches and return any search results.
 fn handle_queries(
     sqlite: &Connection,
@@ -758,12 +800,13 @@ fn handle_queries(
 
                 let search_results = search_index(sqlite, new_stems);
                 let serps = collate_search(search_results, stem_ids);
-                let mut files = Vec::<String>::new();
+                let sorted = sort_search_results(
+                    &serps,
+                    alpha_only.split_whitespace().collect()
+                );
 
-                serps.keys().for_each(|s| files.push(s.to_string()));
-                files.push("".to_string());
                 println!("{:#?}", serps);
-                client.write(files.join("\n").as_bytes()).unwrap();
+                client.write(sorted.join("\n").as_bytes()).unwrap();
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
