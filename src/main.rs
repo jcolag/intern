@@ -12,7 +12,7 @@ use notify::DebouncedEvent::{
     Chmod, Create, Error, NoticeRemove, NoticeWrite, Remove, Rename, Rescan,
     Write as NotifyWrite,
 };
-use notify::{watcher, RecursiveMode, Watcher};
+use notify::{watcher, INotifyWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use rusqlite::{params, params_from_iter, Connection, Statement};
 use rust_stemmers::{Algorithm, Stemmer};
@@ -147,36 +147,69 @@ fn main() {
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => match event {
-                Chmod(event) => println!("chmod {:?}", event),
-                Create(epath) => {
-                    let path = epath.to_str().unwrap();
-                    let last_modified = file_mod_time(path);
-
-                    if path.contains(".git")
-                        || path.contains(".hg")
-                        || path.ends_with(".svg")
-                    {
-                        continue;
-                    }
-
-                    watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
-                    process_file(
-                        &sqlite,
-                        path,
-                        &punc,
-                        &acc,
-                        &stem,
-                        last_modified,
-                        &mut fileq,
-                    );
-                }
+                Chmod(epath) => process_event(
+                    "chmod",
+                    epath,
+                    &sqlite,
+                    &punc,
+                    &acc,
+                    &stem,
+                    &mut fileq,
+                    &mut watcher,
+                ),
+                Create(epath) => process_event(
+                    "create",
+                    epath,
+                    &sqlite,
+                    &punc,
+                    &acc,
+                    &stem,
+                    &mut fileq,
+                    &mut watcher,
+                ),
                 Error(event, _path) => println!("error {:?}", event),
-                NoticeRemove(event) => println!("nremove {:?}", event),
-                NoticeWrite(event) => println!("write {:?}", event),
-                Remove(event) => println!("remove {:?}", event),
+                NoticeRemove(epath) => process_event(
+                    "notice remove",
+                    epath,
+                    &sqlite,
+                    &punc,
+                    &acc,
+                    &stem,
+                    &mut fileq,
+                    &mut watcher,
+                ),
+                NoticeWrite(epath) => process_event(
+                    "notice write",
+                    epath,
+                    &sqlite,
+                    &punc,
+                    &acc,
+                    &stem,
+                    &mut fileq,
+                    &mut watcher,
+                ),
+                NotifyWrite(epath) => process_event(
+                    "notify write",
+                    epath,
+                    &sqlite,
+                    &punc,
+                    &acc,
+                    &stem,
+                    &mut fileq,
+                    &mut watcher,
+                ),
+                Remove(epath) => process_event(
+                    "remove",
+                    epath,
+                    &sqlite,
+                    &punc,
+                    &acc,
+                    &stem,
+                    &mut fileq,
+                    &mut watcher,
+                ),
                 Rename(old, new) => println!("{:?} => {:?}", old, new),
                 Rescan => println!("rescan {:?}", event),
-                NotifyWrite(path) => println!("nwrite {:?}", path),
             },
             Err(e) => {
                 if e != std::sync::mpsc::RecvTimeoutError::Timeout {
@@ -199,6 +232,38 @@ fn main() {
             &stem,
         );
     }
+}
+
+fn process_event(
+    event_name: &str,
+    epath: PathBuf,
+    sqlite: &Connection,
+    punc: &Regex,
+    acc: &Regex,
+    stem: &Stemmer,
+    fileq: &mut Statement,
+    watcher: &mut INotifyWatcher,
+) {
+    let path = epath.to_str().unwrap();
+    let last_modified = file_mod_time(path);
+
+    if path.contains(".git")
+        || path.contains(".hg")
+        || path.ends_with(".svg")
+    {
+        return;
+    }
+
+    watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
+    process_file(
+        &sqlite,
+        path,
+        &punc,
+        &acc,
+        &stem,
+        last_modified,
+        fileq,
+    );
 }
 
 // Iterate through the files in the folder, adding or indexing any files
