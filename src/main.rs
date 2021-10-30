@@ -1,4 +1,5 @@
 extern crate dirs;
+extern crate log;
 extern crate notify;
 extern crate regex;
 extern crate rusqlite;
@@ -6,6 +7,7 @@ extern crate rust_stemmers;
 extern crate unicode_normalization;
 
 use gitignore;
+use log::{debug, info};
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use notify::DebouncedEvent::{
@@ -64,7 +66,7 @@ fn main() {
     let punc = Regex::new(r"[\x00-\x26\x28-\x2F\x3A-\x40\x5B-\x60\x7B-\x7F]+").unwrap();
     let acc = Regex::new(r"\x{0300}-\x{035f}").unwrap();
     let stem = Stemmer::create(Algorithm::English);
-    let (config_path, db_path) = find_paths();
+    let (config_path, db_path, log_path) = find_paths();
     let config_file = fs::read_to_string(config_path.as_path())
         .expect("Unable to read configuration file.");
     let config = gjson::parse(&config_file);
@@ -79,6 +81,17 @@ fn main() {
     let mut events = Events::with_capacity(1024);
     let server_token: Token = Token(0);
 
+    flexi_logger::Logger::try_with_str(config.get("logLevel").str())
+        .unwrap()
+        .log_to_file(
+            flexi_logger::FileSpec::default()
+                .directory(log_path)
+                .basename("intern")
+                .suffix("log")
+        )
+        .print_message()
+        .start()
+        .unwrap();
     enforce_data_model(&sqlite);
 
     let mut fileq = sqlite
@@ -140,7 +153,7 @@ fn main() {
         .register(&mut server, server_token, Interest::READABLE)
         .unwrap();
     match SystemTime::now().duration_since(start) {
-        Ok(n) => println!("{} seconds", n.as_secs()),
+        Ok(n) => info!("{} seconds to re-index", n.as_secs()),
         Err(_) => panic!("Something bad"),
     }
 
@@ -167,7 +180,7 @@ fn main() {
                     &mut fileq,
                     &mut watcher,
                 ),
-                Error(event, _path) => println!("error {:?}", event),
+                Error(event, _path) => debug!("error {:?} (unexpected)", event),
                 NoticeRemove(epath) => process_event(
                     "notice remove",
                     epath,
@@ -208,12 +221,12 @@ fn main() {
                     &mut fileq,
                     &mut watcher,
                 ),
-                Rename(old, new) => println!("{:?} => {:?}", old, new),
-                Rescan => println!("rescan {:?}", event),
+                Rename(old, new) => debug!("{:?} => {:?}", old, new),
+                Rescan => debug!("rescan {:?} (unexpected)", event),
             },
             Err(e) => {
                 if e != std::sync::mpsc::RecvTimeoutError::Timeout {
-                    println!("watch error: {:#?}", e);
+                    debug!("watch error: {:#?}", e);
                 }
             }
         }
@@ -254,6 +267,7 @@ fn process_event(
         return;
     }
 
+    debug!("processing {} for {}", event_name, path);
     watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
     process_file(
         &sqlite,
@@ -486,16 +500,20 @@ fn enforce_data_model(sqlite: &Connection) {
 
 // Extract information from application configuration file at:
 //   ~/.config/intern/intern.json
-fn find_paths() -> (PathBuf, PathBuf) {
+fn find_paths() -> (PathBuf, PathBuf, PathBuf) {
+    let app = "intern";
     let mut config_path = dirs::config_dir().expect("Can't access configuration folder.");
-    config_path.push("intern");
-    config_path.push("intern.json");
+    config_path.push(app);
+    config_path.push(format!("{}.json", app));
 
-    let mut db_path = dirs::config_dir().expect("Can't access configuration folder.");
-    db_path.push("intern");
-    db_path.push("intern.sqlite3");
+    let mut db_path = dirs::config_dir().unwrap();
+    db_path.push(app);
+    db_path.push(format!("{}.sqlite3", app));
 
-    (config_path, db_path)
+    let mut log_path = dirs::config_dir().unwrap();
+    log_path.push("intern");
+
+    (config_path, db_path, log_path)
 }
 
 // Get the modification time of a file.
@@ -826,7 +844,7 @@ fn handle_queries(
                 break;
             }
             Err(e) => {
-                println!("{:?}", e);
+                debug!("{:?}", e);
                 return;
             }
         };
@@ -870,12 +888,12 @@ fn handle_queries(
                     alpha_only.split_whitespace().collect()
                 );
 
-                println!("{:#?}", serps);
+                debug!("{:#?}", serps);
                 client.write(sorted.join("\n").as_bytes()).unwrap();
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => println!("{:#?}", e),
+            Err(e) => debug!("{:#?}", e),
         }
     }
 }
