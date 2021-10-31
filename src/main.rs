@@ -108,7 +108,7 @@ fn main() {
         let folder_name = folder.get("name");
         let path = folder_name.str();
         let ignoregit = Path::new(path).join(".gitignore");
-        let ignorehg = Path::new(path).join(".gitignore");
+        let ignorehg = Path::new(path).join(".hgignore");
         let ignores = if ignoregit.exists() {
             gitignore::File::new(&ignoregit)
         } else {
@@ -130,18 +130,25 @@ fn main() {
             Ok(ignore) => {
                 // Either un-watching or ignore status doesn't work as
                 // expected, so we flip the logic, only watching
-                // non-ignored files.
+                // non-ignored (included) files.
                 watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
-                ignore.included_files().into_iter().for_each(|files| {
-                    files.into_iter().for_each(|include| {
+                ignore
+                    .included_files()
+                    .unwrap()
+                    .into_iter()
+                    .filter(|f|
+                        !f.to_str().unwrap().contains(".git") &&
+                        !f.to_str().unwrap().contains(".hg")
+                    )
+                    .for_each(|file| {
+                        trace!("watching {:?}", file);
                         watcher
                             .watch(
-                                Path::new(include.to_str().unwrap()),
+                                Path::new(file.to_str().unwrap()),
                                 RecursiveMode::NonRecursive,
                             )
                             .unwrap();
                     });
-                });
             }
             // Not an error; just no ignore file
             Err(_) => watcher.watch(path, mode).unwrap(),
