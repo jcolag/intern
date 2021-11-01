@@ -7,7 +7,7 @@ extern crate rust_stemmers;
 extern crate unicode_normalization;
 
 use gitignore;
-use log::{debug, info};
+use log::{debug, error, info, trace};
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use notify::DebouncedEvent::{
@@ -83,6 +83,7 @@ fn main() {
 
     flexi_logger::Logger::try_with_str(config.get("logLevel").str())
         .unwrap()
+        .format(flexi_logger::detailed_format)
         .log_to_file(
             flexi_logger::FileSpec::default()
                 .directory(log_path)
@@ -93,6 +94,7 @@ fn main() {
         .start()
         .unwrap();
     enforce_data_model(&sqlite);
+    info!("INTERN reporting for duty");
 
     let mut fileq = sqlite
         .prepare("SELECT id, modified, path FROM monitored_file where path = ?")
@@ -525,13 +527,19 @@ fn find_paths() -> (PathBuf, PathBuf, PathBuf) {
 
 // Get the modification time of a file.
 fn file_mod_time(path: &str) -> u64 {
-    let metadata = fs::metadata(path).unwrap();
-    metadata
-        .modified()
-        .unwrap()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+    let mut time: u64 = 0;
+
+    match fs::metadata(path) {
+        Ok(metadata) => time = metadata
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        Err(e) => error!("{} for {}", e, path),
+    }
+
+    time
 }
 
 // Get the stem for the current word.
@@ -804,7 +812,7 @@ fn sort_search_results(
     search.keys().for_each(|k| {
         let mut score = 1.0;
         let stems = &search[k];
-        let offsets = Vec::<Vec::<u32>>::new();
+        let _offsets = Vec::<Vec::<u32>>::new();
 
         stems.keys().for_each(|s| {
             let words = &stems[s];
