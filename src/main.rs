@@ -20,6 +20,7 @@ use rusqlite::{params, params_from_iter, Connection, Statement};
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -143,7 +144,6 @@ fn main() {
                         !f.to_str().unwrap().contains(".hg")
                     )
                     .for_each(|file| {
-                        trace!("watching {:?}", file);
                         watcher
                             .watch(
                                 Path::new(file.to_str().unwrap()),
@@ -813,6 +813,35 @@ fn sort_search_results(
         let mut score = 1.0;
         let stems = &search[k];
         let _offsets = Vec::<Vec::<u32>>::new();
+        let stem_keys = Vec::from_iter(stems.keys());
+
+        for s in 1..stem_keys.len() - 1 {
+            let offsets = &stems[stem_keys[s]];
+            let compare = &stems[stem_keys[s + 1]];
+            let mut oi = 0;
+            let mut ci = 0;
+
+            while oi < offsets.len() && ci < compare.len() {
+                let offset = offsets[oi].offset;
+                let comp = compare[ci].offset;
+                if offset > comp {
+                    ci += 1;
+                    continue;
+                };
+
+                let diff = comp - offset;
+
+                if diff < 2 {
+                    score += 3.0;
+                } else if diff < 7 {
+                    score += 2.0;
+                } else if diff <= 20 {
+                    score += 1.0;
+                }
+
+                oi += 1;
+            }
+        }
 
         stems.keys().for_each(|s| {
             let words = &stems[s];
