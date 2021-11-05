@@ -905,39 +905,55 @@ fn handle_queries(
         match client.read(&mut buffer) {
             Ok(_) => {
                 let query = str::from_utf8(&buffer).unwrap();
-                let alpha_only = punc.replace_all(&query, " ");
-                let space_split = alpha_only.split_whitespace();
-                let all_stems = select_all_stems(sqlite);
-                let mut new_stems = Vec::<WordStem>::new();
-                let mut stem_ids = Vec::<u32>::new();
 
-                space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
-                    let stem = stem_word(word, accents, stemmer);
-                    let id = if all_stems.contains_key(&stem) {
-                        all_stems[&stem]
-                    } else {
-                        0
-                    };
-
-                    new_stems.push(WordStem { id: id, stem: stem });
-                    if !stem_ids.contains(&id) && id > 0 {
-                        stem_ids.push(id);
-                    }
-                });
-
-                let search_results = search_index(sqlite, new_stems);
-                let serps = collate_search(search_results, stem_ids);
-                let sorted = sort_search_results(
-                    &serps,
-                    alpha_only.split_whitespace().collect()
-                );
-
-                debug!("{:#?}", serps);
-                client.write(sorted.join("\n").as_bytes()).unwrap();
+                if query.starts_with("@on") {
+                } else {
+                    respond_to_search(query, punc, accents, stemmer, sqlite, client);
+                }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => debug!("{:#?}", e),
         }
     }
+}
+
+// Find and return search results to client
+fn respond_to_search(
+    query: &str,
+    punc: &Regex,
+    accents: &Regex,
+    stemmer: &Stemmer,
+    sqlite: &Connection,
+    mut client: mio::net::TcpStream,
+) {
+    let alpha_only = punc.replace_all(&query, " ");
+    let space_split = alpha_only.split_whitespace();
+    let all_stems = select_all_stems(sqlite);
+    let mut new_stems = Vec::<WordStem>::new();
+    let mut stem_ids = Vec::<u32>::new();
+
+    space_split.filter(|w| !punc.is_match(w)).for_each(|word| {
+        let stem = stem_word(word, accents, stemmer);
+        let id = if all_stems.contains_key(&stem) {
+            all_stems[&stem]
+        } else {
+            0
+        };
+
+        new_stems.push(WordStem { id: id, stem: stem });
+        if !stem_ids.contains(&id) && id > 0 {
+            stem_ids.push(id);
+        }
+    });
+
+    let search_results = search_index(sqlite, new_stems);
+    let serps = collate_search(search_results, stem_ids);
+    let sorted = sort_search_results(
+        &serps,
+        alpha_only.split_whitespace().collect()
+    );
+
+    debug!("{:#?}", serps);
+    client.write(sorted.join("\n").as_bytes()).unwrap();
 }
