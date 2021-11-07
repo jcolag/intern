@@ -909,6 +909,8 @@ fn handle_queries(
 
                 if query.starts_with("@on") {
                     respond_to_today(query, sqlite, client);
+                } else if query.starts_with("@ago") {
+                    respond_to_ago(query, sqlite, client);
                 } else {
                     respond_to_search(query, punc, accents, stemmer, sqlite, client);
                 }
@@ -929,6 +931,46 @@ fn respond_to_today(
     let query_string = raw_query
         .trim_matches(char::from(0))
         .replace("@on", "")
+        .replace("\n", "");
+    let query = format!("{} 00:00:00", query_string);
+    let mut day_start = Local::today().and_hms(0, 0, 0).timestamp();
+
+    match NaiveDateTime::parse_from_str(&query, "%F %T") {
+        Ok(date) => day_start = date.timestamp(),
+        Err(e) => warn!("Can't parse '{}': {}", query_string, e),
+    }
+
+    let day_end = day_start + 86400;
+    let select = format!(
+        "SELECT path FROM monitored_file WHERE modified >= {} AND modified <= {} ORDER BY modified",
+        day_start,
+        day_end
+    );
+    match sqlite.prepare(select.as_str()) {
+        Ok(mut stmt) => {
+            let file_rows = stmt.query_map([], |row| {
+                Ok(row.get(0))
+            }).unwrap();
+            let mut files = Vec::<String>::new();
+
+            file_rows.for_each(|f| files.push(f.unwrap().unwrap()));
+            debug!("{:#?}", files);
+            files.push("".to_string()); // To ensure we retain the last character
+            client.write(files.join("\n").as_bytes()).unwrap();
+        },
+        Err(e) => error!("Unable to aggregate results: {}", e),
+    }
+}
+
+// Return files modified on the specified date
+fn respond_to_ago(
+    raw_query: &str,
+    sqlite: &Connection,
+    mut client: mio::net::TcpStream,
+) {
+    let query_string = raw_query
+        .trim_matches(char::from(0))
+        .replace("@ago", "")
         .replace("\n", "");
     let query = format!("{} 00:00:00", query_string);
     let mut day_start = Local::today().and_hms(0, 0, 0).timestamp();
