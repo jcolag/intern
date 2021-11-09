@@ -590,6 +590,35 @@ fn select_all_stems(sqlite: &Connection) -> HashMap<String, u32> {
     result
 }
 
+// Return all files modified during the 24 hours after day_start and send
+// the resulting list back to the specified client, rather than returning.
+fn select_files_by_day(
+    day_start: i64,
+    sqlite: &Connection,
+    mut client: mio::net::TcpStream,
+) {
+    let day_end = day_start + 86400;
+    let select = format!(
+        "SELECT path FROM monitored_file WHERE modified >= {} AND modified <= {} ORDER BY modified",
+        day_start,
+        day_end
+    );
+    match sqlite.prepare(select.as_str()) {
+        Ok(mut stmt) => {
+            let file_rows = stmt.query_map([], |row| {
+                Ok(row.get(0))
+            }).unwrap();
+            let mut files = Vec::<String>::new();
+
+            file_rows.for_each(|f| files.push(f.unwrap().unwrap()));
+            debug!("{:#?}", files);
+            files.push("".to_string()); // To ensure we retain the last character
+            client.write(files.join("\n").as_bytes()).unwrap();
+        },
+        Err(e) => error!("Unable to aggregate results: {}", e),
+    }
+}
+
 // Add a file to be indexed.
 fn insert_file(
     sqlite: &Connection,
@@ -926,7 +955,7 @@ fn handle_queries(
 fn respond_to_today(
     raw_query: &str,
     sqlite: &Connection,
-    mut client: mio::net::TcpStream,
+    client: mio::net::TcpStream,
 ) {
     let query_string = raw_query
         .trim_matches(char::from(0))
@@ -940,33 +969,14 @@ fn respond_to_today(
         Err(e) => warn!("Can't parse '{}': {}", query_string, e),
     }
 
-    let day_end = day_start + 86400;
-    let select = format!(
-        "SELECT path FROM monitored_file WHERE modified >= {} AND modified <= {} ORDER BY modified",
-        day_start,
-        day_end
-    );
-    match sqlite.prepare(select.as_str()) {
-        Ok(mut stmt) => {
-            let file_rows = stmt.query_map([], |row| {
-                Ok(row.get(0))
-            }).unwrap();
-            let mut files = Vec::<String>::new();
-
-            file_rows.for_each(|f| files.push(f.unwrap().unwrap()));
-            debug!("{:#?}", files);
-            files.push("".to_string()); // To ensure we retain the last character
-            client.write(files.join("\n").as_bytes()).unwrap();
-        },
-        Err(e) => error!("Unable to aggregate results: {}", e),
-    }
+    select_files_by_day(day_start, sqlite, client);
 }
 
 // Return files modified on the specified date
 fn respond_to_ago(
     raw_query: &str,
     sqlite: &Connection,
-    mut client: mio::net::TcpStream,
+    client: mio::net::TcpStream,
 ) {
     let query_string = raw_query
         .trim_matches(char::from(0))
@@ -980,26 +990,7 @@ fn respond_to_ago(
         Err(e) => warn!("Can't parse '{}': {}", query_string, e),
     }
 
-    let day_end = day_start + 86400;
-    let select = format!(
-        "SELECT path FROM monitored_file WHERE modified >= {} AND modified <= {} ORDER BY modified",
-        day_start,
-        day_end
-    );
-    match sqlite.prepare(select.as_str()) {
-        Ok(mut stmt) => {
-            let file_rows = stmt.query_map([], |row| {
-                Ok(row.get(0))
-            }).unwrap();
-            let mut files = Vec::<String>::new();
-
-            file_rows.for_each(|f| files.push(f.unwrap().unwrap()));
-            debug!("{:#?}", files);
-            files.push("".to_string()); // To ensure we retain the last character
-            client.write(files.join("\n").as_bytes()).unwrap();
-        },
-        Err(e) => error!("Unable to aggregate results: {}", e),
-    }
+    select_files_by_day(day_start, sqlite, client);
 }
 
 // Find and return search results to client
