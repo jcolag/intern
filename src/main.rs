@@ -982,13 +982,15 @@ fn respond_to_ago(
         .trim_matches(char::from(0))
         .replace("@ago", "")
         .replace("\n", "");
-    let query = format!("{} 00:00:00", query_string);
-    let mut day_start = Local::today().and_hms(0, 0, 0).timestamp();
-
-    match NaiveDateTime::parse_from_str(&query, "%F %T") {
-        Ok(date) => day_start = date.timestamp(),
-        Err(e) => warn!("Can't parse '{}': {}", query_string, e),
-    }
+    let today = Local::today().and_hms(0, 0, 0);
+    let days_ago = match query_string.parse() {
+        Ok(n) => n,
+        Err(e) => {
+            warn!("Using today: {}", e);
+            0
+        }
+    };
+    let day_start = (today + chrono::Duration::days(-days_ago)).timestamp();
 
     select_files_by_day(day_start, sqlite, client);
 }
