@@ -278,7 +278,11 @@ fn process_event(
     }
 
     debug!("processing {} for {}", event_name, path);
-    watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
+    match watcher.watch(path, RecursiveMode::NonRecursive) {
+        Ok(_) => (),
+        Err(e) => warn!("Can't watch {}: {}", path, e),
+    }
+
     process_file(
         &sqlite,
         path,
