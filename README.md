@@ -30,3 +30,36 @@ The upshot is that I would expect the folders and certain features to be configu
 
 Eventually, though, I may consider adding content like visited webpages, since it's close to impossible to perform a keyword search, but limited to pages that I've seen at *some* point.
 
+## Configuration
+
+To set **INTERN** to the work of indexing, you'll need a configuration file in an `intern` folder in your user's configuration folder.  On most Linux systems, that's something like `~/.config/intern/intern.json`.  I haven't tested on other systems, but **INTERN** requests the path to the files, so the equivalent should work on other systems.
+
+Once you create the file, it should look something like the following.
+
+```json
+{
+  "folder": [
+    {
+      "name": "/home/user/path/to/recursively/search/",
+      "recurse": true
+    },
+    {
+      "name": "/home/user/path/to/ignore/subfolders/",
+      "recurse": false
+    }
+  ],
+  "logLevel": "warn",
+  "period": 10
+}
+```
+
+The `folder` item is an array of paths to monitor, with a flag to turn recursive watching  on and off.  The `logLevel` decides how much information to put into the log file, and must be one of the following.
+
+ * `error`:  This is the least-verbose, just logging critical information.
+ * `warn`
+ * `info`:  Consider this "normal," if you want such a thing.
+ * `debug`:  Helpful for reporting issues.
+ * `trace`:  Useful for following the program flow.
+
+The `period` item is the time (in seconds) that the file-watcher will wait between checking for updates.
+
