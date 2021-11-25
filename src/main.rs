@@ -7,7 +7,6 @@ extern crate rust_stemmers;
 extern crate unicode_normalization;
 
 use chrono::{NaiveDateTime, Local};
-use gitignore;
 use log::{debug, error, info, trace, warn};
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
@@ -284,11 +283,11 @@ fn process_event(
     }
 
     process_file(
-        &sqlite,
+        sqlite,
         path,
-        &punc,
-        &acc,
-        &stem,
+        punc,
+        acc,
+        stem,
         last_modified,
         fileq,
     );
@@ -319,7 +318,7 @@ fn process_folder(
     ignored.iter().for_each(|i| {
         ignores.push(IgnoreFile {
             path: String::from(i.as_path().to_str().unwrap()),
-            file: gitignore::File::new(&i).unwrap(),
+            file: gitignore::File::new(i).unwrap(),
         });
     });
 
@@ -359,9 +358,9 @@ fn process_folder(
             // directories from falling through to be managed as normal files.
         } else {
             let mut ignore = false;
-            for i in 0..ignores.len() {
+            for item in &ignores {
                 ignore =
-                    ignore || ignores[i].file.is_excluded(Path::new(&path_str)).unwrap();
+                    ignore || item.file.is_excluded(Path::new(&path_str)).unwrap();
             }
 
             if !ignore {
@@ -388,7 +387,7 @@ fn process_file(
             // Update and index an existing file.
             let mtime = some_mod.unwrap();
             if mtime.modified < last_modified {
-                update_file_mod_time(sqlite, &last_modified, &path_str);
+                update_file_mod_time(sqlite, &last_modified, path_str);
                 index_file(
                     sqlite,
                     path_str,
@@ -403,7 +402,7 @@ fn process_file(
         }
         None => {
             // Create and index a new file.
-            let mod_time = insert_file(sqlite, fileq, &path_str, &last_modified);
+            let mod_time = insert_file(sqlite, fileq, path_str, &last_modified);
 
             index_file(
                 sqlite,
@@ -430,7 +429,7 @@ fn index_file(
     last_modified: u64,
     fileq: &mut Statement,
 ) {
-    let text = fs::read_to_string(path).unwrap_or("".to_string());
+    let text = fs::read_to_string(path).unwrap_or_else(|_| "".to_string());
     let alpha_only = punc.replace_all(&text, " ");
     let mut space_split = alpha_only.split_whitespace();
     let mut word_count = 0;
@@ -617,7 +616,7 @@ fn select_files_by_day(
             file_rows.for_each(|f| files.push(f.unwrap().unwrap()));
             debug!("{:#?}", files);
             files.push("".to_string()); // To ensure we retain the last character
-            client.write(files.join("\n").as_bytes()).unwrap();
+            client.write_all(files.join("\n").as_bytes()).unwrap();
         },
         Err(e) => error!("Unable to aggregate results: {}", e),
     }
@@ -768,7 +767,7 @@ fn collate_search(
     search.iter().for_each(|sr| {
         // We don't actually want special behavior on the first run,
         // so we fake having a previous run with these conditions.
-        if last_file == "" {
+        if last_file.is_empty() {
             last_file = &sr.path;
         }
 
@@ -801,7 +800,7 @@ fn collate_search(
             by_file.keys().for_each(|k| {
                 let mut stems = Vec::<SearchResult>::new();
 
-                by_file[&k].iter().for_each(|s| {
+                by_file[k].iter().for_each(|s| {
                     stems.push(SearchResult {
                         path: s.path.to_string(),
                         word: s.word.to_string(),
@@ -1008,7 +1007,7 @@ fn respond_to_search(
     sqlite: &Connection,
     mut client: mio::net::TcpStream,
 ) {
-    let alpha_only = punc.replace_all(&query, " ");
+    let alpha_only = punc.replace_all(query, " ");
     let space_split = alpha_only.split_whitespace();
     let all_stems = select_all_stems(sqlite);
     let mut new_stems = Vec::<WordStem>::new();
@@ -1022,7 +1021,7 @@ fn respond_to_search(
             0
         };
 
-        new_stems.push(WordStem { id: id, stem: stem });
+        new_stems.push(WordStem { id, stem });
         if !stem_ids.contains(&id) && id > 0 {
             stem_ids.push(id);
         }
@@ -1036,5 +1035,5 @@ fn respond_to_search(
     );
 
     debug!("{:#?}", serps);
-    client.write(sorted.join("\n").as_bytes()).unwrap();
+    client.write_all(sorted.join("\n").as_bytes()).unwrap();
 }
