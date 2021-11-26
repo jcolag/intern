@@ -76,7 +76,10 @@ fn main() {
     let mut watcher = watcher(tx, Duration::from_secs(check_period)).unwrap();
     let sqlite = Connection::open(db_path.as_path()).unwrap();
     let start = SystemTime::now();
-    let server_addr = "0.0.0.0:48813".parse().unwrap();
+    let server_info = config.get("server");
+    let ip = server_info.get("address");
+    let port = server_info.get("port").u32();
+    let server_addr = format!("{}:{}", ip.str(), port).parse().unwrap();
     let mut server = TcpListener::bind(server_addr).unwrap();
     let mut server_poll = Poll::new().unwrap();
     let mut events = Events::with_capacity(1024);
