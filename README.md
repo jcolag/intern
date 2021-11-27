@@ -49,7 +49,11 @@ Once you create the file, it should look something like the following.
     }
   ],
   "logLevel": "warn",
-  "period": 10
+  "period": 10,
+  "server": {
+    "address": "0.0.0.0",
+    "port": 5432
+  }
 }
 ```
 
@@ -61,5 +65,5 @@ The `folder` item is an array of paths to monitor, with a flag to turn recursive
  * `debug`:  Helpful for reporting issues.
  * `trace`:  Useful for following the program flow.
 
-The `period` item is the time (in seconds) that the file-watcher will wait between checking for updates.
+The `period` item is the time (in seconds) that the file-watcher will wait between checking for updates.  The `server` field allows **INTERN** and [**Ask INTERN**](https://github.com/jcolag/ask-intern) to coordinate without hard-coding, including an `address` and a `port`.
 
