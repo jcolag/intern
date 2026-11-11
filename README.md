@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2021 John Colagioia <john@colagioia.net>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # INTERN
 
 The Internal Network Topic-Exploring Researcher for Notes (INTERN) is a local search engine designed around my---[John](https://john.colagioia.net)'s---notes.
